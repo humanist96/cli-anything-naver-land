@@ -9,6 +9,8 @@ from cli_anything.naver_land.core.districts import (
     TRADE_TYPES,
     TRADE_TYPE_NAMES,
     find_district,
+    find_city,
+    load_districts,
 )
 from cli_anything.naver_land.utils.naver_api import NaverLandApiClient
 
@@ -156,24 +158,33 @@ def search_region(
     limit: int = 50,
     client: NaverLandApiClient | None = None,
     on_progress: callable = None,
+    city_name: str | None = None,
 ) -> list[NaverListing]:
     """Search listings in a district.
 
     Args:
-        district_name: Korean name of the district (e.g. "강남구")
+        district_name: Korean name of the district (e.g. "강남구", "해운대구")
         trade_types: List of trade type names (매매/전세/월세/단기임대). None = all.
         property_type: Property type code (APT/VL/OPST/OR/ABYG/JGC/DDDGG).
         sort: Sort order (rank/prc/spc/date).
         limit: Maximum number of results.
         client: Optional API client (created if not provided).
         on_progress: Optional callback(page, total_so_far).
+        city_name: Optional city/province name (e.g. "부산시"). None = auto-detect.
 
     Returns:
         List of NaverListing objects.
     """
-    district = find_district(district_name)
+    # If city specified, load its districts first to enable lookup
+    if city_name:
+        city = find_city(city_name)
+        if city is None:
+            raise ValueError(f"시/도를 찾을 수 없습니다: {city_name}")
+        load_districts(city.code)
+
+    district = find_district(district_name, city_name=city_name)
     if district is None:
-        raise ValueError(f"구를 찾을 수 없습니다: {district_name}")
+        raise ValueError(f"지역을 찾을 수 없습니다: {district_name}")
 
     # Build trade type code string
     if trade_types:
@@ -222,6 +233,7 @@ def search_complex(
     property_type: str = "APT",
     limit: int = 50,
     client: NaverLandApiClient | None = None,
+    city_name: str | None = None,
 ) -> list[NaverListing]:
     """Search listings by complex (apartment) name.
 
@@ -236,6 +248,7 @@ def search_complex(
         property_type=property_type,
         limit=500,
         client=client,
+        city_name=city_name,
     )
 
     matched = [

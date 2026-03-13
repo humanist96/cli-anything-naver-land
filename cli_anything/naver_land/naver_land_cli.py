@@ -32,8 +32,11 @@ from cli_anything.naver_land.core.districts import (
     TRADE_TYPES,
     PROPERTY_TYPES,
     SORT_OPTIONS,
+    find_city,
     find_district,
+    list_cities,
     list_districts,
+    load_districts,
 )
 from cli_anything.naver_land.core.search import (
     search_region as do_search_region,
@@ -123,7 +126,7 @@ def handle_error(func):
 @click.option("--json", "use_json", is_flag=True, help="Output as JSON")
 @click.pass_context
 def cli(ctx, use_json):
-    """Naver Land CLI — Search apartments for sale/rent in Seoul districts."""
+    """Naver Land CLI — 전국 부동산 매물 검색 (네이버 부동산)"""
     global _json_output
     _json_output = use_json
     ctx.ensure_object(dict)
@@ -141,8 +144,8 @@ def search():
 
 
 @search.command("region")
-@click.option("--city", "-c", default="서울시", help="시/도 (default: 서울시)")
-@click.option("--district", "-d", required=True, help="구 이름 (필수)")
+@click.option("--city", "-c", default=None, help="시/도 (예: 서울시, 부산시, 경기도)")
+@click.option("--district", "-d", required=True, help="구/군/시 이름 (필수)")
 @click.option("--trade-type", "-t", multiple=True,
               help="거래유형: 매매/전세/월세/단기임대 (복수 가능)")
 @click.option("--property", "-p", "property_type",
@@ -162,17 +165,24 @@ def search():
 @handle_error
 def search_region(city, district, trade_type, property_type, size_type,
                   min_area, max_area, min_price, max_price, floor, sort, limit):
-    """Search listings in a district."""
+    """Search listings in a district (전국 지원)."""
     global _current_listings, _current_filter
 
     trade_types = list(trade_type) if trade_type else None
 
+    # If city specified, load its districts
+    if city:
+        city_obj = find_city(city)
+        if city_obj:
+            load_districts(city_obj.code)
+
     if not _json_output:
-        district_obj = find_district(district)
+        district_obj = find_district(district, city_name=city)
         if district_obj:
             trade_desc = ", ".join(trade_types) if trade_types else "전체"
             prop_desc = PROPERTY_TYPES.get(property_type, property_type)
-            click.echo(f"  검색: {district_obj.name} | {prop_desc} | {trade_desc} | 최대 {limit}건")
+            city_desc = district_obj.city_name
+            click.echo(f"  검색: {city_desc} {district_obj.name} | {prop_desc} | {trade_desc} | 최대 {limit}건")
 
     def on_progress(page, total):
         if not _json_output:
@@ -185,6 +195,7 @@ def search_region(city, district, trade_type, property_type, size_type,
         sort=sort,
         limit=limit,
         on_progress=on_progress,
+        city_name=city,
     )
 
     criteria = FilterCriteria(
@@ -225,7 +236,8 @@ def search_region(city, district, trade_type, property_type, size_type,
 
 @search.command("complex")
 @click.option("--name", "-n", required=True, help="단지명 (부분 일치)")
-@click.option("--district", "-d", required=True, help="구 이름")
+@click.option("--district", "-d", required=True, help="구/군/시 이름")
+@click.option("--city", "-c", default=None, help="시/도 (예: 부산시, 경기도)")
 @click.option("--trade-type", "-t", multiple=True,
               help="거래유형: 매매/전세/월세/단기임대")
 @click.option("--property", "-p", "property_type",
@@ -233,14 +245,20 @@ def search_region(city, district, trade_type, property_type, size_type,
               default="APT", help="부동산 유형")
 @click.option("--limit", "-n", "max_results", type=int, default=50, help="최대 결과 수")
 @handle_error
-def search_complex(name, district, trade_type, property_type, max_results):
-    """Search listings by complex (apartment) name."""
+def search_complex(name, district, city, trade_type, property_type, max_results):
+    """Search listings by complex (apartment) name — 전국 지원."""
     global _current_listings
 
     trade_types = list(trade_type) if trade_type else None
 
+    if city:
+        city_obj = find_city(city)
+        if city_obj:
+            load_districts(city_obj.code)
+
     if not _json_output:
-        click.echo(f"  단지명 검색: '{name}' in {district}")
+        city_desc = f"{city} " if city else ""
+        click.echo(f"  단지명 검색: '{name}' in {city_desc}{district}")
 
     listings = do_search_complex(
         complex_name=name,
@@ -248,6 +266,7 @@ def search_complex(name, district, trade_type, property_type, max_results):
         trade_types=trade_types,
         property_type=property_type,
         limit=max_results,
+        city_name=city,
     )
 
     _current_listings = listings
@@ -263,16 +282,35 @@ def search_complex(name, district, trade_type, property_type, max_results):
         format_table(listings)
 
 
-@search.command("districts")
+@search.command("cities")
 @handle_error
-def search_districts():
-    """List all supported districts."""
-    districts = list_districts()
+def search_cities():
+    """List all supported cities/provinces (시/도 목록)."""
+    cities = list_cities()
     if _json_output:
-        output([{"code": d.code, "name": d.name, "cortarNo": d.cortarNo}
+        output([{"code": c.code, "name": c.name, "cortarNo": c.cortarNo}
+                for c in cities])
+    else:
+        click.echo(f"  지원 시/도 ({len(cities)}개):")
+        for c in cities:
+            click.echo(f"    {c.name} (코드: {c.code})")
+
+
+@search.command("districts")
+@click.option("--city", "-c", default=None, help="시/도 (미지정 시 서울)")
+@handle_error
+def search_districts(city):
+    """List districts in a city (구/군 목록)."""
+    try:
+        districts = list_districts(city_name=city)
+    except ValueError as e:
+        raise ValueError(str(e))
+    city_label = city if city else "서울시"
+    if _json_output:
+        output([{"code": d.code, "name": d.name, "city": d.city_name, "cortarNo": d.cortarNo}
                 for d in districts])
     else:
-        click.echo(f"  지원 지역 ({len(districts)}개):")
+        click.echo(f"  {city_label} 지역 ({len(districts)}개):")
         for d in districts:
             click.echo(f"    {d.name} (코드: {d.code}, cortarNo: {d.cortarNo})")
 
@@ -510,8 +548,10 @@ def repl():
 
     commands = {
         "search region -d <구>": "지역 검색 (예: search region -d 강남구 -t 매매)",
+        "search region -c <시/도> -d <구>": "전국 검색 (예: search region -c 부산시 -d 해운대구)",
         "search complex -n <이름> -d <구>": "단지명 검색",
-        "search districts": "지원 지역 목록",
+        "search cities": "지원 시/도 목록",
+        "search districts [-c <시/도>]": "구/군 목록 (미지정 시 서울)",
         "filter apply": "필터 적용 (--type, --min-price 등)",
         "filter clear": "필터 초기화",
         "filter show": "현재 필터 보기",

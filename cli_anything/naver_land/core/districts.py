@@ -1,8 +1,16 @@
-"""District data — Seoul 25 districts with bounding box coordinates for Naver Land API."""
+"""Region data — Nationwide cities and districts for Naver Land API.
+
+Supports all 17 시/도 and their 구/군/시 districts.
+Seoul districts are embedded as fallback; other regions are fetched
+from Naver's cortarList API and cached locally.
+"""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -30,8 +38,66 @@ class District:
         )
 
 
+@dataclass(frozen=True)
+class City:
+    code: str
+    name: str
+    center_lat: float
+    center_lon: float
+
+    @property
+    def cortarNo(self) -> str:
+        return f"{self.code}00000000"
+
+
+# ── 17 시/도 ──────────────────────────────────────────────────────
+
+CITIES: dict[str, City] = {
+    "11": City("11", "서울시", 37.5665, 126.9780),
+    "26": City("26", "부산시", 35.1796, 129.0756),
+    "27": City("27", "대구시", 35.8714, 128.6014),
+    "28": City("28", "인천시", 37.4563, 126.7052),
+    "29": City("29", "광주시", 35.1595, 126.8526),
+    "30": City("30", "대전시", 36.3504, 127.3845),
+    "31": City("31", "울산시", 35.5384, 129.3114),
+    "36": City("36", "세종시", 36.4800, 127.2890),
+    "41": City("41", "경기도", 37.4138, 127.5183),
+    "42": City("42", "강원도", 37.8228, 128.1555),
+    "43": City("43", "충청북도", 36.6357, 127.4912),
+    "44": City("44", "충청남도", 36.5184, 126.8000),
+    "45": City("45", "전라북도", 35.7175, 127.1530),
+    "46": City("46", "전라남도", 34.8679, 126.9910),
+    "47": City("47", "경상북도", 36.4919, 128.8889),
+    "48": City("48", "경상남도", 35.4606, 128.2132),
+    "50": City("50", "제주도", 33.4996, 126.5312),
+}
+
+# Name-based city lookup (supports multiple name forms)
+CITY_BY_NAME: dict[str, City] = {}
+for _c in CITIES.values():
+    CITY_BY_NAME[_c.name] = _c
+    # Allow short forms: "서울", "부산", "대구", etc.
+    for _suffix in ("시", "도"):
+        if _c.name.endswith(_suffix):
+            CITY_BY_NAME[_c.name[:-1]] = _c
+    # Special short forms
+_CITY_ALIASES = {
+    "서울특별시": "11", "부산광역시": "26", "대구광역시": "27",
+    "인천광역시": "28", "광주광역시": "29", "대전광역시": "30",
+    "울산광역시": "31", "세종특별자치시": "36",
+    "경기": "41", "강원": "42", "강원특별자치도": "42",
+    "충북": "43", "충남": "44",
+    "전북": "45", "전북특별자치도": "45", "전남": "46",
+    "경북": "47", "경남": "48",
+    "제주": "50", "제주특별자치도": "50",
+}
+for _alias, _code in _CITY_ALIASES.items():
+    CITY_BY_NAME[_alias] = CITIES[_code]
+
+
+# ── Seoul embedded data (fallback) ────────────────────────────────
+
 def _parse_coords(s: str) -> dict:
-    """Parse coordinate string like '&z=13&btm=37.5138176&lft=126.8804177&top=37.6321853&rgt=127.0788583'."""
     params = {}
     for part in s.strip("&").split("&"):
         if "=" in part:
@@ -44,19 +110,14 @@ def _build_district(code: str, name: str, coord_str: str,
                     city_code: str = "11", city_name: str = "서울시") -> District:
     p = _parse_coords(coord_str)
     return District(
-        code=code,
-        name=name,
-        city_code=city_code,
-        city_name=city_name,
+        code=code, name=name,
+        city_code=city_code, city_name=city_name,
         zoom=int(p.get("z", 13)),
-        btm=float(p["btm"]),
-        lft=float(p["lft"]),
-        top=float(p["top"]),
-        rgt=float(p["rgt"]),
+        btm=float(p["btm"]), lft=float(p["lft"]),
+        top=float(p["top"]), rgt=float(p["rgt"]),
     )
 
 
-# Seoul 25 districts — extracted from crawl_naver.py
 _SEOUL_DATA = {
     "110": ("종로구", "&z=13&btm=37.5138176&lft=126.8804177&top=37.6321853&rgt=127.0788583"),
     "140": ("중구", "&z=13&btm=37.5046273&lft=126.8867068&top=37.6230096&rgt=127.1084932"),
@@ -89,16 +150,71 @@ SEOUL_DISTRICTS: dict[str, District] = {}
 for _code, (_name, _coords) in _SEOUL_DATA.items():
     SEOUL_DISTRICTS[_code] = _build_district(_code, _name, _coords)
 
-# Name-based lookup (Korean name → District)
-DISTRICT_BY_NAME: dict[str, District] = {}
-for d in SEOUL_DISTRICTS.values():
-    DISTRICT_BY_NAME[d.name] = d
-    # Also allow without 구 suffix
-    if d.name.endswith("구"):
-        DISTRICT_BY_NAME[d.name[:-1]] = d
+
+# ── Nationwide district data ──────────────────────────────────────
+
+_district_cache: dict[str, list[District]] = {
+    "11": list(SEOUL_DISTRICTS.values()),
+}
 
 
-# Trade type mappings
+def _district_from_center(code: str, name: str, city_code: str, city_name: str,
+                          center_lat: float, center_lon: float) -> District:
+    """Build a District from center coordinates with approximate bounding box."""
+    lat_delta = 0.06
+    lon_delta = 0.10
+    return District(
+        code=code, name=name,
+        city_code=city_code, city_name=city_name,
+        zoom=13,
+        btm=round(center_lat - lat_delta, 7),
+        lft=round(center_lon - lon_delta, 7),
+        top=round(center_lat + lat_delta, 7),
+        rgt=round(center_lon + lon_delta, 7),
+    )
+
+
+def _load_from_embedded_data(city_code: str) -> list[District]:
+    """Load districts from hardcoded region data."""
+    from cli_anything.naver_land.core._regions_data import REGION_DATA
+
+    entries = REGION_DATA.get(city_code, [])
+    city = CITIES.get(city_code)
+    if not entries or not city:
+        return []
+
+    return [
+        _district_from_center(
+            code=code, name=name,
+            city_code=city_code, city_name=city.name,
+            center_lat=lat, center_lon=lon,
+        )
+        for code, name, lat, lon in entries
+    ]
+
+
+def load_districts(city_code: str) -> list[District]:
+    """Load districts for a city from embedded data.
+
+    Priority: memory cache → embedded hardcoded data.
+    Seoul uses precise bounding boxes; other cities use approximate ones.
+    """
+    if city_code in _district_cache:
+        return _district_cache[city_code]
+
+    city = CITIES.get(city_code)
+    if city is None:
+        return []
+
+    districts = _load_from_embedded_data(city_code)
+    if districts:
+        _district_cache[city_code] = districts
+
+    return districts
+
+
+# ── Trade / Property / Sort mappings ──────────────────────────────
+
 TRADE_TYPES = {
     "매매": "A1",
     "전세": "B1",
@@ -108,7 +224,6 @@ TRADE_TYPES = {
 
 TRADE_TYPE_NAMES = {v: k for k, v in TRADE_TYPES.items()}
 
-# Property type mappings
 PROPERTY_TYPES = {
     "APT": "아파트",
     "VL": "빌라/연립",
@@ -119,7 +234,6 @@ PROPERTY_TYPES = {
     "DDDGG": "단독/다가구",
 }
 
-# Sort options
 SORT_OPTIONS = {
     "rank": "추천순",
     "prc": "가격순",
@@ -128,18 +242,78 @@ SORT_OPTIONS = {
 }
 
 
-def find_district(name: str) -> District | None:
-    """Find a district by name (supports partial match)."""
+# ── Lookup functions ──────────────────────────────────────────────
+
+def find_city(name: str) -> City | None:
+    """Find a city by name (supports partial match and aliases)."""
     name = name.strip()
-    if name in DISTRICT_BY_NAME:
-        return DISTRICT_BY_NAME[name]
+    if name in CITY_BY_NAME:
+        return CITY_BY_NAME[name]
     # Partial match
-    for dname, district in DISTRICT_BY_NAME.items():
-        if name in dname:
-            return district
+    for cname, city in CITY_BY_NAME.items():
+        if name in cname:
+            return city
     return None
 
 
-def list_districts() -> list[District]:
-    """Return all districts sorted by name."""
+def find_district(name: str, city_name: str | None = None) -> District | None:
+    """Find a district by name, optionally within a specific city.
+
+    If city_name is None, searches Seoul first, then all loaded caches.
+    """
+    name = name.strip()
+
+    if city_name:
+        city = find_city(city_name)
+        if city is None:
+            return None
+        districts = load_districts(city.code)
+        return _match_district(name, districts)
+
+    # Default: search Seoul first
+    result = _match_district(name, list(SEOUL_DISTRICTS.values()))
+    if result:
+        return result
+
+    # Then search all cached districts
+    for city_code, districts in _district_cache.items():
+        if city_code == "11":
+            continue
+        result = _match_district(name, districts)
+        if result:
+            return result
+
+    return None
+
+
+def _match_district(name: str, districts: list[District]) -> District | None:
+    """Match district by exact name, short name, or partial match."""
+    # Exact match
+    for d in districts:
+        if d.name == name:
+            return d
+    # Without suffix (구/군/시)
+    for d in districts:
+        for suffix in ("구", "군", "시"):
+            if d.name.endswith(suffix) and d.name[:-1] == name:
+                return d
+    # Partial match
+    for d in districts:
+        if name in d.name:
+            return d
+    return None
+
+
+def list_cities() -> list[City]:
+    """Return all cities sorted by code."""
+    return sorted(CITIES.values(), key=lambda c: c.code)
+
+
+def list_districts(city_name: str | None = None) -> list[District]:
+    """Return districts for a city (default: Seoul)."""
+    if city_name:
+        city = find_city(city_name)
+        if city is None:
+            raise ValueError(f"시/도를 찾을 수 없습니다: {city_name}")
+        return sorted(load_districts(city.code), key=lambda d: d.code)
     return sorted(SEOUL_DISTRICTS.values(), key=lambda d: d.code)

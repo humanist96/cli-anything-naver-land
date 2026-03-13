@@ -2,11 +2,12 @@
 
 네이버 부동산(Naver Land) 매물 정보를 터미널에서 검색하는 CLI 도구입니다.
 
-서울 25개 구의 아파트 매매/전세/월세 매물을 검색하고, 필터링하고, CSV/JSON/Excel로 내보낼 수 있습니다.
+**전국 17개 시/도, 248개 구/군/시**의 아파트 매매/전세/월세 매물을 검색하고, 필터링하고, CSV/JSON/Excel로 내보낼 수 있습니다.
 
 ## 주요 기능
 
-- **지역 검색** — 구 이름으로 매물 검색 (예: 강남구, 서초구)
+- **전국 검색** — 서울뿐 아니라 부산, 대구, 경기도 등 전국 모든 지역 지원
+- **지역 검색** — 구/군/시 이름으로 매물 검색 (예: 강남구, 해운대구, 분당구)
 - **단지명 검색** — 아파트 단지명으로 검색 (예: 래미안, 힐스테이트)
 - **다양한 필터** — 평형, 가격, 층수 등으로 결과 필터링
 - **내보내기** — CSV, JSON, Excel 형식으로 저장
@@ -42,7 +43,7 @@ pip install -e ".[excel]"
 
 ## 사용법
 
-### 기본 검색
+### 기본 검색 (서울)
 
 ```bash
 # 강남구 매매 매물 검색
@@ -55,11 +56,46 @@ cli-anything-naver-land search region -d 서초구 -t 전세
 cli-anything-naver-land search region -d 송파구 -t 매매 -t 전세
 ```
 
+### 전국 검색 (`-c` 옵션)
+
+```bash
+# 부산 해운대구 매매
+cli-anything-naver-land search region -c 부산시 -d 해운대구 -t 매매
+
+# 경기도 분당구 전세
+cli-anything-naver-land search region -c 경기도 -d 분당구 -t 전세
+
+# 대전 유성구 매매
+cli-anything-naver-land search region -c 대전 -d 유성구 -t 매매
+
+# 제주 제주시 매매
+cli-anything-naver-land search region -c 제주 -d 제주시 -t 매매
+```
+
+> **참고:** 서울은 `-c` 없이도 자동 검색됩니다. 다른 시/도는 `-c`로 지정하세요.
+
 ### 단지명 검색
 
 ```bash
 # 강남구에서 '래미안' 단지 검색
 cli-anything-naver-land search complex -n 래미안 -d 강남구
+
+# 부산 해운대구에서 '엘시티' 검색
+cli-anything-naver-land search complex -n 엘시티 -d 해운대구 -c 부산시
+```
+
+### 지역 목록 조회
+
+```bash
+# 지원 시/도 목록
+cli-anything-naver-land search cities
+
+# 특정 시/도의 구/군 목록
+cli-anything-naver-land search districts -c 부산시
+cli-anything-naver-land search districts -c 경기도
+
+# 서울 구 목록 (기본값)
+cli-anything-naver-land search districts
 ```
 
 ### 필터 적용
@@ -69,7 +105,7 @@ cli-anything-naver-land search complex -n 래미안 -d 강남구
 cli-anything-naver-land search region -d 강남구 -t 매매 --type 30평대 --min-price 5억 --max-price 15억
 
 # 전용면적 기준 필터
-cli-anything-naver-land search region -d 서초구 -t 전세 --min-area 84 --max-area 120
+cli-anything-naver-land search region -c 부산 -d 해운대구 -t 전세 --min-area 84 --max-area 120
 
 # 10층 이상만
 cli-anything-naver-land search region -d 강남구 -t 매매 --floor 10+
@@ -85,10 +121,10 @@ cli-anything-naver-land --json search region -d 종로구 -t 매매 -n 5
 
 ```bash
 # 먼저 검색 후, 결과를 파일로 저장
-cli-anything-naver-land search region -d 강남구 -t 매매
-cli-anything-naver-land export csv -o 강남구_매매.csv
-cli-anything-naver-land export json -o 강남구_매매.json
-cli-anything-naver-land export excel -o 강남구_매매.xlsx
+cli-anything-naver-land search region -c 부산 -d 해운대구 -t 매매
+cli-anything-naver-land export csv -o 해운대_매매.csv
+cli-anything-naver-land export json -o 해운대_매매.json
+cli-anything-naver-land export excel -o 해운대_매매.xlsx
 ```
 
 ### 대화형 모드 (REPL)
@@ -102,9 +138,11 @@ REPL 모드에서 사용 가능한 명령어:
 
 | 명령어 | 설명 |
 |--------|------|
-| `search region -d <구> -t <거래유형>` | 지역 검색 |
+| `search region -d <구>` | 서울 지역 검색 |
+| `search region -c <시/도> -d <구>` | 전국 지역 검색 |
 | `search complex -n <단지명> -d <구>` | 단지명 검색 |
-| `search districts` | 지원 지역 목록 |
+| `search cities` | 시/도 목록 |
+| `search districts [-c <시/도>]` | 구/군 목록 |
 | `filter apply --type <평형>` | 필터 적용 |
 | `filter clear` | 필터 초기화 |
 | `filter show` | 현재 필터 보기 |
@@ -118,6 +156,28 @@ REPL 모드에서 사용 가능한 명령어:
 | `quit` | 종료 |
 
 ## 검색 옵션 상세
+
+### 시/도 (`-c`)
+
+| 값 | 설명 |
+|----|------|
+| `서울시` (또는 `서울`) | 서울특별시 — 25개 구 |
+| `부산시` (또는 `부산`) | 부산광역시 — 16개 구/군 |
+| `대구시` (또는 `대구`) | 대구광역시 — 9개 구/군 |
+| `인천시` (또는 `인천`) | 인천광역시 — 10개 구/군 |
+| `광주시` (또는 `광주`) | 광주광역시 — 5개 구 |
+| `대전시` (또는 `대전`) | 대전광역시 — 5개 구 |
+| `울산시` (또는 `울산`) | 울산광역시 — 5개 구/군 |
+| `세종시` | 세종특별자치시 |
+| `경기도` (또는 `경기`) | 경기도 — 42개 시/구 |
+| `강원도` (또는 `강원`) | 강원특별자치도 — 18개 시/군 |
+| `충청북도` (또는 `충북`) | 충청북도 — 14개 시/군 |
+| `충청남도` (또는 `충남`) | 충청남도 — 16개 시/군 |
+| `전라북도` (또는 `전북`) | 전북특별자치도 — 15개 시/군 |
+| `전라남도` (또는 `전남`) | 전라남도 — 22개 시/군 |
+| `경상북도` (또는 `경북`) | 경상북도 — 23개 시/군 |
+| `경상남도` (또는 `경남`) | 경상남도 — 22개 시/군 |
+| `제주도` (또는 `제주`) | 제주특별자치도 — 2개 시 |
 
 ### 거래유형 (`-t`)
 
@@ -174,15 +234,15 @@ REPL 모드에서 사용 가능한 명령어:
 | `8억 5,000` | 8억 5천만원 |
 | `50000` | 5억원 (만원 단위) |
 
-## 지원 지역 (서울 25개 구)
-
-강남구, 강동구, 강북구, 강서구, 관악구, 광진구, 구로구, 금천구, 노원구, 도봉구, 동대문구, 동작구, 마포구, 서대문구, 서초구, 성동구, 성북구, 송파구, 양천구, 영등포구, 용산구, 은평구, 종로구, 중구, 중랑구
-
 ## FAQ
 
 ### Q: "구" 를 빼고 검색해도 되나요?
 
-네, `강남`으로 검색해도 `강남구`로 인식됩니다.
+네, `강남`으로 검색해도 `강남구`로 인식됩니다. `해운대`→`해운대구`, `분당`→`성남시 분당구`도 됩니다.
+
+### Q: 서울은 `-c` 없이도 되나요?
+
+네, 서울 지역은 `-c` 옵션 없이 구 이름만으로 검색됩니다. 다른 시/도는 `-c`로 지정하세요.
 
 ### Q: Excel 내보내기가 안 돼요
 
@@ -197,10 +257,6 @@ pip install openpyxl
 ```bash
 pip install -e ".[excel]"
 ```
-
-### Q: 서울 외 지역도 검색할 수 있나요?
-
-현재 버전은 서울 25개 구만 지원합니다.
 
 ### Q: 검색 속도가 느려요
 
