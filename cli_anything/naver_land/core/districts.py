@@ -256,6 +256,22 @@ def find_city(name: str) -> City | None:
     return None
 
 
+def find_all_matching_districts(name: str) -> list[District]:
+    """Find ALL districts matching a name across all cities.
+
+    Loads all cities and searches for matching districts.
+    Returns list of candidates (may be 0, 1, or multiple).
+    """
+    name = name.strip()
+    candidates = []
+    for city_code in CITIES:
+        districts = load_districts(city_code)
+        match = _match_district(name, districts)
+        if match:
+            candidates.append(match)
+    return candidates
+
+
 def find_district(name: str, city_name: str | None = None) -> District | None:
     """Find a district by name, optionally within a specific city.
 

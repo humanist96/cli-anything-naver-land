@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import time
+
 from cli_anything.naver_land.core.districts import (
     District,
     TRADE_TYPES,
@@ -13,6 +15,61 @@ from cli_anything.naver_land.core.districts import (
     load_districts,
 )
 from cli_anything.naver_land.utils.naver_api import NaverLandApiClient
+
+
+# ── Singleton client ──────────────────────────────────────────
+_shared_client: NaverLandApiClient | None = None
+
+
+def get_shared_client() -> NaverLandApiClient:
+    """Get or create a shared API client for session reuse."""
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = NaverLandApiClient()
+    return _shared_client
+
+
+def close_shared_client():
+    """Close the shared client (call on shutdown)."""
+    global _shared_client
+    if _shared_client is not None:
+        _shared_client.close()
+        _shared_client = None
+
+
+# ── Result cache ──────────────────────────────────────────────
+_result_cache: dict[str, tuple[float, list]] = {}
+CACHE_TTL = 300  # 5 minutes
+
+
+def _cache_key(district_name: str, city_name: str | None,
+               trade_types: list[str] | None, property_type: str,
+               sort: str, limit: int) -> str:
+    """Build a cache key from search parameters."""
+    parts = [
+        district_name,
+        city_name or "",
+        ":".join(sorted(trade_types)) if trade_types else "all",
+        property_type,
+        sort,
+        str(limit),
+    ]
+    return "|".join(parts)
+
+
+def _get_cached(key: str) -> list | None:
+    """Return cached results if still valid, else None."""
+    if key in _result_cache:
+        ts, results = _result_cache[key]
+        if time.time() - ts < CACHE_TTL:
+            return results
+        del _result_cache[key]
+    return None
+
+
+def _set_cache(key: str, results: list):
+    """Store results in cache."""
+    _result_cache[key] = (time.time(), results)
 
 
 def classify_size(spc1: float) -> str:
@@ -198,9 +255,16 @@ def search_region(
     else:
         trad_tp_cd = "A1:B1:B2:B3"
 
+    # Check cache first
+    ckey = _cache_key(district_name, city_name, trade_types, property_type, sort, limit)
+    cached = _get_cached(ckey)
+    if cached is not None:
+        return cached
+
+    # Use shared client if none provided
     own_client = client is None
     if own_client:
-        client = NaverLandApiClient()
+        client = get_shared_client()
 
     try:
         raw_articles = client.fetch_all_pages(
@@ -213,8 +277,8 @@ def search_region(
             on_progress=on_progress,
         )
     finally:
-        if own_client:
-            client.close()
+        # Only close if user passed their own client and it's not the shared one
+        pass
 
     listings = []
     for item in raw_articles:
@@ -223,7 +287,24 @@ def search_region(
         except Exception:
             continue
 
+    _set_cache(ckey, listings)
     return listings
+
+
+def listing_url(atcl_no: str) -> str:
+    """Generate Naver Land article URL from article number."""
+    return f"https://m.land.naver.com/article/info/{atcl_no}"
+
+
+def district_map_url(district: District, trade_type: str = "A1") -> str:
+    """Generate Naver Land map URL for a district."""
+    lat = (district.btm + district.top) / 2
+    lon = (district.lft + district.rgt) / 2
+    return (
+        f"https://m.land.naver.com/map/"
+        f"{lat:.6f}:{lon:.6f}:{district.zoom}:"
+        f"{district.cortarNo}/APT:JGC/{trade_type}"
+    )
 
 
 def search_complex(

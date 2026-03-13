@@ -34,6 +34,7 @@ from cli_anything.naver_land.core.districts import (
     SORT_OPTIONS,
     find_city,
     find_district,
+    find_all_matching_districts,
     list_cities,
     list_districts,
     load_districts,
@@ -41,11 +42,16 @@ from cli_anything.naver_land.core.districts import (
 from cli_anything.naver_land.core.search import (
     search_region as do_search_region,
     search_complex as do_search_complex,
+    listing_url,
+    district_map_url,
+    close_shared_client,
     NaverListing,
 )
 from cli_anything.naver_land.core.filter import FilterCriteria, apply_filters
 from cli_anything.naver_land.core import export as export_mod
-from cli_anything.naver_land.utils.formatters import format_table, format_json, format_summary
+from cli_anything.naver_land.utils.formatters import (
+    format_table, format_json, format_summary, format_summary_text,
+)
 
 _session: Optional[Session] = None
 _json_output = False
@@ -158,12 +164,17 @@ def search():
 @click.option("--min-price", default=None, help="최소 가격 (예: 5억, 50000)")
 @click.option("--max-price", default=None, help="최대 가격 (예: 15억)")
 @click.option("--floor", default=None, help="층 필터 (예: 10+, 3-10)")
+@click.option("--since", "since_date", default=None, help="확인일 시작 (예: 2026-03-01)")
+@click.option("--until", "until_date", default=None, help="확인일 끝")
+@click.option("--tag", multiple=True, help="태그 필터 (예: --tag 역세권 --tag 신축)")
+@click.option("--name-contains", default=None, help="단지명 포함 (예: 래미안)")
 @click.option("--sort", type=click.Choice(list(SORT_OPTIONS.keys())),
               default="rank", help="정렬")
 @click.option("--limit", "-n", type=int, default=1000, help="최대 결과 수 (기본: 전체)")
 @handle_error
 def search_region(city, district, trade_type, property_type, size_type,
-                  min_area, max_area, min_price, max_price, floor, sort, limit):
+                  min_area, max_area, min_price, max_price, floor,
+                  since_date, until_date, tag, name_contains, sort, limit):
     """Search listings in a district (전국 지원)."""
     global _current_listings, _current_filter
 
@@ -186,9 +197,19 @@ def search_region(city, district, trade_type, property_type, size_type,
             city_desc = district_obj.city_name
             click.echo(f"  검색: {city_desc} {district_obj.name} | {prop_desc} | {trade_desc}")
 
+    # Check for ambiguous district names
+    if not city:
+        candidates = find_all_matching_districts(district)
+        if len(candidates) > 1:
+            click.echo(f"\n  \u26a0 '{district}'이(가) 여러 도시에 있습니다:")
+            for i, c in enumerate(candidates, 1):
+                click.echo(f"    [{i}] {c.city_name} {c.name}")
+            click.echo(f"  \u2192 -c 옵션으로 시/도를 지정하세요 (예: -c {candidates[0].city_name})")
+            return
+
     def on_progress(page, total):
         if not _json_output:
-            click.echo(f"  ... 페이지 {page} ({total}건 수집)")
+            click.echo(f"\r  수집 중... {total}건 (페이지 {page})", nl=False)
 
     listings = do_search_region(
         district_name=district,
@@ -200,6 +221,9 @@ def search_region(city, district, trade_type, property_type, size_type,
         city_name=city,
     )
 
+    if not _json_output:
+        click.echo(f"\r  수집 완료: {len(listings)}건" + " " * 20)
+
     criteria = FilterCriteria(
         size_type=size_type,
         min_area=min_area,
@@ -207,6 +231,10 @@ def search_region(city, district, trade_type, property_type, size_type,
         min_price=min_price,
         max_price=max_price,
         floor=floor,
+        since_date=since_date,
+        until_date=until_date,
+        tags=list(tag) if tag else None,
+        name_contains=name_contains,
     )
 
     if not criteria.is_empty:
@@ -227,13 +255,7 @@ def search_region(city, district, trade_type, property_type, size_type,
         output([l.to_dict() for l in listings])
     else:
         format_table(listings)
-        summary = format_summary(listings, district)
-        if summary.get("trade_types"):
-            parts = [f"{k}: {v}" for k, v in summary["trade_types"].items()]
-            click.echo(f"  거래유형: {', '.join(parts)}")
-        if summary.get("size_types"):
-            parts = [f"{k}: {v}" for k, v in summary["size_types"].items()]
-            click.echo(f"  평형분류: {', '.join(parts)}")
+        click.echo(format_summary_text(listings, district))
 
 
 @search.command("complex")
@@ -317,6 +339,134 @@ def search_districts(city):
             click.echo(f"    {d.name} (코드: {d.code}, cortarNo: {d.cortarNo})")
 
 
+# ── NLQ Command ────────────────────────────────────────────────
+
+@cli.command("nlq")
+@click.argument("query", nargs=-1, required=True)
+@handle_error
+def nlq_search(query):
+    """Natural language search (자연어 검색).
+
+    예: nlq 강남 30평대 매매 10억 이하
+    예: nlq 부산 해운대 전세 84㎡ 이상
+    """
+    global _current_listings, _current_filter
+    from cli_anything.naver_land.nlq import parse_natural_query
+
+    text = " ".join(query)
+    parsed = parse_natural_query(text)
+
+    if not parsed.district_name:
+        raise ValueError(f"지역을 찾을 수 없습니다: '{text}'\n"
+                         f"  구/군 이름을 포함해 주세요 (예: 강남구, 해운대구)")
+
+    if not _json_output:
+        parts = [f"{parsed.city_name or ''} {parsed.district_name}"]
+        if parsed.trade_types:
+            parts.append(", ".join(parsed.trade_types))
+        if parsed.size_type:
+            parts.append(parsed.size_type)
+        if parsed.max_price:
+            parts.append(f"~{parsed.max_price}")
+        if parsed.min_price:
+            parts.append(f"{parsed.min_price}~")
+        if parsed.complex_name:
+            parts.append(f"단지: {parsed.complex_name}")
+        click.echo(f"  파싱 결과: {' | '.join(parts)}")
+
+    def on_progress(page, total):
+        if not _json_output:
+            click.echo(f"\r  수집 중... {total}건 (페이지 {page})", nl=False)
+
+    if parsed.complex_name and parsed.district_name:
+        listings = do_search_complex(
+            complex_name=parsed.complex_name,
+            district_name=parsed.district_name,
+            trade_types=parsed.trade_types or None,
+            property_type=parsed.property_type,
+            limit=parsed.limit,
+            city_name=parsed.city_name,
+        )
+    else:
+        listings = do_search_region(
+            district_name=parsed.district_name,
+            trade_types=parsed.trade_types or None,
+            property_type=parsed.property_type,
+            sort=parsed.sort,
+            limit=parsed.limit,
+            on_progress=on_progress,
+            city_name=parsed.city_name,
+        )
+
+    if not _json_output:
+        click.echo(f"\r  수집 완료: {len(listings)}건" + " " * 20)
+
+    criteria = parsed.to_filter_criteria()
+    if not criteria.is_empty:
+        listings = apply_filters(listings, criteria)
+        _current_filter = criteria
+
+    _current_listings = listings
+
+    if _json_output:
+        output([l.to_dict() for l in listings])
+    else:
+        format_table(listings)
+        click.echo(format_summary_text(listings, parsed.district_name))
+
+    # Handle export intent
+    if parsed.export_format and listings:
+        export_path = parsed.export_path or f"{parsed.district_name}.{parsed.export_format}"
+        if parsed.export_format == "csv":
+            result = export_mod.export_csv(listings, export_path)
+        elif parsed.export_format == "json":
+            result = export_mod.export_json(listings, export_path)
+        elif parsed.export_format == "excel":
+            result = export_mod.export_excel(listings, export_path)
+        else:
+            return
+        click.echo(f"  저장 완료: {result['path']} ({result['count']}건)")
+
+
+# ── URL Command ────────────────────────────────────────────────
+
+@search.command("url")
+@click.option("--article", "-a", default=None, help="매물번호 (atcl_no)")
+@click.option("--district", "-d", default=None, help="구/군 이름 (지도 URL)")
+@click.option("--city", "-c", default=None, help="시/도")
+@click.option("--trade", "-t", default="매매", help="거래유형 (지도 URL용)")
+@handle_error
+def search_url(article, district, city, trade):
+    """Generate Naver Land URLs for articles or district maps."""
+    from cli_anything.naver_land.core.districts import TRADE_TYPES
+
+    if article:
+        url = listing_url(article)
+        if _json_output:
+            output({"url": url, "atcl_no": article})
+        else:
+            click.echo(f"  매물 URL: {url}")
+
+    elif district:
+        district_obj = find_district(district, city_name=city)
+        if district_obj is None:
+            raise ValueError(f"지역을 찾을 수 없습니다: {district}")
+        trade_code = TRADE_TYPES.get(trade, "A1")
+        url = district_map_url(district_obj, trade_code)
+        if _json_output:
+            output({"url": url, "district": district_obj.name, "city": district_obj.city_name})
+        else:
+            click.echo(f"  지도 URL: {url}")
+    else:
+        # Show URLs for current listings (first 5)
+        if not _current_listings:
+            raise ValueError("검색 결과가 없습니다. 먼저 search를 실행하세요.")
+        for l in _current_listings[:5]:
+            click.echo(f"  {l.atcl_nm}: {listing_url(l.atcl_no)}")
+        if len(_current_listings) > 5:
+            click.echo(f"  ... 외 {len(_current_listings) - 5}건")
+
+
 # ── Filter Command Group ────────────────────────────────────────
 
 @cli.group()
@@ -334,8 +484,13 @@ def filter():
 @click.option("--min-price", default=None, help="최소 가격")
 @click.option("--max-price", default=None, help="최대 가격")
 @click.option("--floor", default=None, help="층 필터")
+@click.option("--since", "since_date", default=None, help="확인일 시작")
+@click.option("--until", "until_date", default=None, help="확인일 끝")
+@click.option("--tag", multiple=True, help="태그 필터")
+@click.option("--name-contains", default=None, help="단지명 포함")
 @handle_error
-def filter_apply(size_type, min_area, max_area, min_price, max_price, floor):
+def filter_apply(size_type, min_area, max_area, min_price, max_price, floor,
+                 since_date, until_date, tag, name_contains):
     """Apply additional filters to current results."""
     global _current_listings, _current_filter
 
@@ -349,6 +504,10 @@ def filter_apply(size_type, min_area, max_area, min_price, max_price, floor):
         min_price=min_price,
         max_price=max_price,
         floor=floor,
+        since_date=since_date,
+        until_date=until_date,
+        tags=list(tag) if tag else None,
+        name_contains=name_contains,
     )
 
     _current_listings = apply_filters(_current_listings, criteria)
@@ -549,12 +708,14 @@ def repl():
     pt_session = skin.create_prompt_session()
 
     commands = {
+        "nlq <자연어 질의>": "자연어 검색 (예: nlq 강남 30평대 매매 10억 이하)",
         "search region -d <구>": "지역 검색 (예: search region -d 강남구 -t 매매)",
         "search region -c <시/도> -d <구>": "전국 검색 (예: search region -c 부산시 -d 해운대구)",
         "search complex -n <이름> -d <구>": "단지명 검색",
+        "search url [-a 매물번호] [-d 구]": "네이버 매물/지도 URL 생성",
         "search cities": "지원 시/도 목록",
         "search districts [-c <시/도>]": "구/군 목록 (미지정 시 서울)",
-        "filter apply": "필터 적용 (--type, --min-price 등)",
+        "filter apply": "필터 적용 (--type, --min-price, --tag, --since 등)",
         "filter clear": "필터 초기화",
         "filter show": "현재 필터 보기",
         "export csv -o <파일>": "CSV 내보내기",

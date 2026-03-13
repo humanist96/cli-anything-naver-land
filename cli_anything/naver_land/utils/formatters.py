@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 
 import click
 
 from cli_anything.naver_land.core.search import NaverListing
+from cli_anything.naver_land.core.filter import parse_price
 
 
 TABLE_HEADERS = ["단지명", "거래", "면적", "분류", "가격", "층", "동"]
@@ -93,9 +95,65 @@ def format_summary(listings: list[NaverListing], district: str = "") -> dict:
         trade_counts[listing.trad_tp_nm] = trade_counts.get(listing.trad_tp_nm, 0) + 1
         size_counts[listing.size_type] = size_counts.get(listing.size_type, 0) + 1
 
+    # Price statistics
+    prices = [parse_price(l.prc) for l in listings if l.prc]
+    valid_prices = [p for p in prices if p > 0]
+
+    price_stats = {}
+    if valid_prices:
+        price_stats = {
+            "min": _format_price_kr(min(valid_prices)),
+            "max": _format_price_kr(max(valid_prices)),
+            "avg": _format_price_kr(sum(valid_prices) // len(valid_prices)),
+        }
+
     return {
         "district": district,
         "total": len(listings),
         "trade_types": trade_counts,
         "size_types": size_counts,
+        "price_stats": price_stats,
     }
+
+
+def format_summary_text(listings: list[NaverListing], district: str = "") -> str:
+    """Generate formatted summary text for display."""
+    summary = format_summary(listings, district)
+    if summary["total"] == 0:
+        return "  검색 결과가 없습니다."
+
+    lines = []
+    if district:
+        lines.append(f"  {district} 검색 결과")
+        lines.append("  " + "─" * 30)
+
+    lines.append(f"  총 매물:    {summary['total']}건")
+
+    ps = summary.get("price_stats", {})
+    if ps:
+        lines.append(f"  가격 범위:  {ps['min']} ~ {ps['max']}")
+        lines.append(f"  평균 가격:  {ps['avg']}")
+
+    if summary.get("size_types"):
+        parts = [f"{k} {v}건" for k, v in summary["size_types"].items()]
+        lines.append(f"  평형 분포:  {' | '.join(parts)}")
+
+    if summary.get("trade_types"):
+        parts = [f"{k} {v}건" for k, v in summary["trade_types"].items()]
+        lines.append(f"  거래유형:  {' | '.join(parts)}")
+
+    return "\n".join(lines)
+
+
+def _format_price_kr(price_man: int) -> str:
+    """Format price in 만원 to Korean notation (예: 85000 → '8억 5,000')."""
+    if price_man <= 0:
+        return "0"
+    eok = price_man // 10000
+    remainder = price_man % 10000
+    if eok > 0 and remainder > 0:
+        return f"{eok}억 {remainder:,}"
+    elif eok > 0:
+        return f"{eok}억"
+    else:
+        return f"{remainder:,}"

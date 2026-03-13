@@ -69,13 +69,21 @@ class FilterCriteria:
     min_price: str | None = None
     max_price: str | None = None
     floor: str | None = None
+    since_date: str | None = None
+    until_date: str | None = None
+    tags: list[str] | None = None
+    name_contains: str | None = None
+    min_rent: str | None = None
+    max_rent: str | None = None
 
     @property
     def is_empty(self) -> bool:
         return all(
             v is None
             for v in (self.size_type, self.min_area, self.max_area,
-                      self.min_price, self.max_price, self.floor)
+                      self.min_price, self.max_price, self.floor,
+                      self.since_date, self.until_date, self.tags,
+                      self.name_contains, self.min_rent, self.max_rent)
         )
 
     def to_dict(self) -> dict:
@@ -92,6 +100,18 @@ class FilterCriteria:
             result["max_price"] = self.max_price
         if self.floor:
             result["floor"] = self.floor
+        if self.since_date:
+            result["since_date"] = self.since_date
+        if self.until_date:
+            result["until_date"] = self.until_date
+        if self.tags:
+            result["tags"] = self.tags
+        if self.name_contains:
+            result["name_contains"] = self.name_contains
+        if self.min_rent:
+            result["min_rent"] = self.min_rent
+        if self.max_rent:
+            result["max_rent"] = self.max_rent
         return result
 
 
@@ -132,5 +152,31 @@ def apply_filters(listings: list[NaverListing], criteria: FilterCriteria) -> lis
                 continue
             filtered.append(listing)
         result = filtered
+
+    if criteria.since_date:
+        result = [l for l in result
+                  if l.cfm_ymd and l.cfm_ymd.replace(".", "") >= criteria.since_date.replace("-", "")]
+
+    if criteria.until_date:
+        result = [l for l in result
+                  if l.cfm_ymd and l.cfm_ymd.replace(".", "") <= criteria.until_date.replace("-", "")]
+
+    if criteria.tags:
+        result = [l for l in result
+                  if any(tag in l.tag_list for tag in criteria.tags)]
+
+    if criteria.name_contains:
+        result = [l for l in result
+                  if criteria.name_contains in l.atcl_nm]
+
+    if criteria.min_rent:
+        min_rent_val = parse_price(criteria.min_rent)
+        result = [l for l in result
+                  if l.rent_prc and parse_price(l.rent_prc) >= min_rent_val]
+
+    if criteria.max_rent:
+        max_rent_val = parse_price(criteria.max_rent)
+        result = [l for l in result
+                  if l.rent_prc and parse_price(l.rent_prc) <= max_rent_val]
 
     return result
