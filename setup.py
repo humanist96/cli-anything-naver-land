@@ -30,17 +30,17 @@ setup(
     ],
     python_requires=">=3.9",
     install_requires=[
-        "click>=8.0.0",
-        "requests>=2.28.0",
-        "prompt-toolkit>=3.0.0",
+        "click>=8.0.0,<9",
+        "requests>=2.28.0,<3",
+        "prompt-toolkit>=3.0.0,<4",
     ],
     extras_require={
         "dev": [
-            "pytest>=7.0.0",
-            "pytest-cov>=4.0.0",
+            "pytest>=7.0.0,<9",
+            "pytest-cov>=4.0.0,<6",
         ],
         "excel": [
-            "openpyxl>=3.0.0",
+            "openpyxl>=3.0.0,<4",
         ],
     },
     entry_points={
