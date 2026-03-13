@@ -36,4 +36,3 @@ coverage.xml
 # bkit / Claude
 .claude/
 .pdca-status.json
-docs/
