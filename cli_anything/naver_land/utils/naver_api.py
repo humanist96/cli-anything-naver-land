@@ -438,10 +438,10 @@ class NaverLandApiClient:
         self,
         cortarNo: str,
         coord_params: str,
-        rletTpCd: str = "APT",
+        rletTpCd: str = "APT:JGC",
         tradTpCd: str = "A1:B1:B2:B3",
         sort: str = "rank",
-        limit: int = 50,
+        limit: int = 1000,
         on_progress: callable = None,
     ) -> list[dict]:
         """Fetch multiple pages of articles with anti-blocking measures."""

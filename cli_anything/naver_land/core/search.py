@@ -153,9 +153,9 @@ def _safe_float(val) -> float:
 def search_region(
     district_name: str,
     trade_types: list[str] | None = None,
-    property_type: str = "APT",
+    property_type: str = "APT:JGC",
     sort: str = "rank",
-    limit: int = 50,
+    limit: int = 1000,
     client: NaverLandApiClient | None = None,
     on_progress: callable = None,
     city_name: str | None = None,

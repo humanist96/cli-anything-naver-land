@@ -149,8 +149,7 @@ def search():
 @click.option("--trade-type", "-t", multiple=True,
               help="거래유형: 매매/전세/월세/단기임대 (복수 가능)")
 @click.option("--property", "-p", "property_type",
-              type=click.Choice(list(PROPERTY_TYPES.keys()), case_sensitive=True),
-              default="APT", help="부동산 유형")
+              default=None, help="부동산 유형 (기본: APT:JGC)")
 @click.option("--type", "size_type",
               type=click.Choice(["소형", "20평대", "30평대", "중대형"]),
               default=None, help="평형 분류")
@@ -161,7 +160,7 @@ def search():
 @click.option("--floor", default=None, help="층 필터 (예: 10+, 3-10)")
 @click.option("--sort", type=click.Choice(list(SORT_OPTIONS.keys())),
               default="rank", help="정렬")
-@click.option("--limit", "-n", type=int, default=50, help="최대 결과 수")
+@click.option("--limit", "-n", type=int, default=1000, help="최대 결과 수 (기본: 전체)")
 @handle_error
 def search_region(city, district, trade_type, property_type, size_type,
                   min_area, max_area, min_price, max_price, floor, sort, limit):
@@ -176,13 +175,16 @@ def search_region(city, district, trade_type, property_type, size_type,
         if city_obj:
             load_districts(city_obj.code)
 
+    # property_type: None → use default (APT:JGC), or user-specified
+    effective_property = property_type or "APT:JGC"
+
     if not _json_output:
         district_obj = find_district(district, city_name=city)
         if district_obj:
             trade_desc = ", ".join(trade_types) if trade_types else "전체"
-            prop_desc = PROPERTY_TYPES.get(property_type, property_type)
+            prop_desc = effective_property
             city_desc = district_obj.city_name
-            click.echo(f"  검색: {city_desc} {district_obj.name} | {prop_desc} | {trade_desc} | 최대 {limit}건")
+            click.echo(f"  검색: {city_desc} {district_obj.name} | {prop_desc} | {trade_desc}")
 
     def on_progress(page, total):
         if not _json_output:
@@ -191,7 +193,7 @@ def search_region(city, district, trade_type, property_type, size_type,
     listings = do_search_region(
         district_name=district,
         trade_types=trade_types,
-        property_type=property_type,
+        property_type=effective_property,
         sort=sort,
         limit=limit,
         on_progress=on_progress,
@@ -241,15 +243,15 @@ def search_region(city, district, trade_type, property_type, size_type,
 @click.option("--trade-type", "-t", multiple=True,
               help="거래유형: 매매/전세/월세/단기임대")
 @click.option("--property", "-p", "property_type",
-              type=click.Choice(list(PROPERTY_TYPES.keys()), case_sensitive=True),
-              default="APT", help="부동산 유형")
-@click.option("--limit", "-n", "max_results", type=int, default=50, help="최대 결과 수")
+              default=None, help="부동산 유형 (기본: APT:JGC)")
+@click.option("--limit", "-n", "max_results", type=int, default=1000, help="최대 결과 수")
 @handle_error
 def search_complex(name, district, city, trade_type, property_type, max_results):
     """Search listings by complex (apartment) name — 전국 지원."""
     global _current_listings
 
     trade_types = list(trade_type) if trade_type else None
+    effective_property = property_type or "APT:JGC"
 
     if city:
         city_obj = find_city(city)
@@ -264,7 +266,7 @@ def search_complex(name, district, city, trade_type, property_type, max_results)
         complex_name=name,
         district_name=district,
         trade_types=trade_types,
-        property_type=property_type,
+        property_type=effective_property,
         limit=max_results,
         city_name=city,
     )
