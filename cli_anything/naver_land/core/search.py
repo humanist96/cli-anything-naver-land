@@ -139,12 +139,14 @@ class NaverListing:
             tags = []
 
         # prc can be numeric (new API) or string; hanPrc has Korean format
+        # complexArticleList uses prcInfo instead of prc/hanPrc
         raw_prc = item.get("prc", "")
         han_prc = item.get("hanPrc", "")
-        prc_str = han_prc if han_prc else str(raw_prc)
+        prc_info = item.get("prcInfo", "")
+        prc_str = han_prc if han_prc else (prc_info if prc_info else str(raw_prc))
 
-        # rentPrc: 0 means no rent
-        raw_rent = item.get("rentPrc", 0)
+        # rentPrc: 0 means no rent; also check tradeRentPrice
+        raw_rent = item.get("rentPrc", 0) or item.get("tradeRentPrice", 0)
         rent_prc = str(raw_rent) if raw_rent and raw_rent != 0 else None
 
         # cfmYmd: try both old and new field names
