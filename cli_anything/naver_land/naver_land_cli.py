@@ -260,13 +260,13 @@ def search_region(city, district, trade_type, property_type, size_type,
 
 @search.command("complex")
 @click.option("--name", "-n", required=True, help="단지명 (부분 일치)")
-@click.option("--district", "-d", required=True, help="구/군/시 이름")
+@click.option("--district", "-d", default=None, help="구/군/시 이름 (없으면 검색 리다이렉트만 사용)")
 @click.option("--city", "-c", default=None, help="시/도 (예: 부산시, 경기도)")
 @click.option("--trade-type", "-t", multiple=True,
               help="거래유형: 매매/전세/월세/단기임대")
 @click.option("--property", "-p", "property_type",
               default=None, help="부동산 유형 (기본: APT:JGC)")
-@click.option("--limit", "-n", "max_results", type=int, default=1000, help="최대 결과 수")
+@click.option("--limit", "-l", "max_results", type=int, default=1000, help="최대 결과 수")
 @handle_error
 def search_complex(name, district, city, trade_type, property_type, max_results):
     """Search listings by complex (apartment) name — 전국 지원."""
