@@ -79,6 +79,14 @@ cd cli-anything-naver-land
 pip install -e .
 ```
 
+> **macOS 사용자:** `pip install`이 `~/Library/Python/3.x/bin/`에 스크립트를 설치합니다.
+> `cli-anything-naver-land` 명령어가 안 되면 PATH를 추가하세요:
+> ```bash
+> echo 'export PATH="$HOME/Library/Python/3.9/bin:$PATH"' >> ~/.zshrc
+> source ~/.zshrc
+> ```
+> Python 버전에 따라 `3.9`를 `3.10`, `3.11` 등으로 변경하세요.
+
 <details>
 <summary>다른 설치 방법</summary>
 
@@ -183,13 +191,46 @@ cli-anything-naver-land export excel -o 강남_매매.xlsx
 
 ---
 
-## REPL Mode
+## REPL Mode (Interactive)
 
-인자 없이 실행하면 대화형 모드로 진입합니다.
+인자 없이 실행하면 **대화형 모드(REPL)** 로 진입합니다. 터미널(iTerm, Terminal.app 등)에서 직접 실행해야 합니다.
+
+> **참고:** REPL은 키보드 입력이 필요한 인터랙티브 모드이므로, 반드시 **터미널에서 직접 실행**하세요. 파이프 입력이나 비대화형 환경(CI, IDE 내장 터미널 등)에서는 일반 모드(`cli-anything-naver-land search ...`)를 사용하세요.
 
 ```bash
+# 터미널에서 실행
 cli-anything-naver-land
 ```
+
+```
+╭──────────────────────────────────────────────────────╮
+│ ◆  cli-anything · Naver Land                         │
+│    v1.0.0                                            │
+│                                                      │
+│    Type help for commands, quit to exit              │
+╰──────────────────────────────────────────────────────╯
+
+◆ naver_land ❯ search complex -n 목동7단지 -t 매매
+  단지명            | 거래 | 면적             | 분류   | 가격       | 층
+  ------------------+------+------------------+--------+------------+-------
+  목동신시가지7단지 | 매매 | 30.6평 (101.2㎡) | 30평대 | 40억       | 7/15
+  목동신시가지7단지 | 매매 | 20.1평 (66.6㎡)  | 20평대 | 28억 5,000 | 10/15
+  ...
+  총 54건
+
+◆ naver_land ❯ nlq 강남 30평대 매매 10억 이하
+  (검색 → 필터 → 결과 출력)
+
+◆ naver_land ❯ export csv -o 결과.csv
+  (내보내기 완료)
+
+◆ naver_land ❯ quit
+```
+
+**REPL의 장점:**
+- 세션/쿠키 재사용으로 연결 시간 절약
+- 검색 → 필터 → 내보내기 연속 작업
+- 명령 히스토리, undo/redo 지원
 
 | 명령어 | 설명 |
 |--------|------|
