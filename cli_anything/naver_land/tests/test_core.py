@@ -12,7 +12,6 @@ import pytest
 from cli_anything.naver_land.core.districts import (
     District,
     SEOUL_DISTRICTS,
-    DISTRICT_BY_NAME,
     TRADE_TYPES,
     PROPERTY_TYPES,
     SORT_OPTIONS,
@@ -26,6 +25,7 @@ from cli_anything.naver_land.core.search import (
     search_region,
     search_complex,
 )
+from cli_anything.naver_land.utils.naver_api import NaverLandApiClient
 from cli_anything.naver_land.core.filter import (
     parse_price,
     parse_floor_filter,
@@ -469,6 +469,16 @@ class TestExport:
 # ── Search with mocked API ──────────────────────────────────────
 
 class TestSearchRegionMocked:
+    @pytest.fixture(autouse=True)
+    def clear_caches(self):
+        """Clear search caches and shared client between tests."""
+        from cli_anything.naver_land.core.search import _result_cache, close_shared_client
+        _result_cache.clear()
+        close_shared_client()
+        yield
+        _result_cache.clear()
+        close_shared_client()
+
     MOCK_API_RESPONSE = {
         "body": [
             {
@@ -501,31 +511,204 @@ class TestSearchRegionMocked:
         assert len(results) == 1
 
     def test_search_region_invalid_district(self):
-        with pytest.raises(ValueError, match="구를 찾을 수 없습니다"):
+        with pytest.raises(ValueError, match="지역을 찾을 수 없습니다"):
             search_region("부산광역시", limit=1)
 
     def test_search_region_invalid_trade_type(self):
         with pytest.raises(ValueError, match="알 수 없는 거래유형"):
             search_region("강남구", trade_types=["잘못된유형"], limit=1)
 
-    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_all_pages")
+    # ── Step 1: search redirect tests ──────────────────────────
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_complex_articles")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.search_complex_by_name")
     @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._ensure_session")
-    def test_search_complex_basic(self, mock_session, mock_fetch):
-        mock_fetch.return_value = self.MOCK_API_RESPONSE["body"]
+    def test_search_complex_via_redirect_302(self, mock_session, mock_search, mock_articles):
+        """Step 1: single match via 302 redirect → hscpNo → articles."""
         mock_session.return_value = MagicMock()
+        mock_search.return_value = [{"hscpNo": "659", "hscpNm": "목동7단지"}]
+        mock_articles.return_value = self.MOCK_API_RESPONSE["body"]
+
+        results = search_complex("목동7단지", district_name="양천구", limit=10)
+        assert len(results) == 1
+        mock_search.assert_called_once_with("목동7단지")
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_complex_articles")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.search_complex_by_name")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._ensure_session")
+    def test_search_complex_via_redirect_200(self, mock_session, mock_search, mock_articles):
+        """Step 1: multiple matches via 200 HTML → first complex used."""
+        mock_session.return_value = MagicMock()
+        mock_search.return_value = [
+            {"hscpNo": "22853", "hscpNm": ""},
+            {"hscpNo": "168097", "hscpNm": ""},
+        ]
+        mock_articles.return_value = self.MOCK_API_RESPONSE["body"]
+
+        results = search_complex("반포자이", district_name="서초구", limit=10)
+        assert len(results) >= 1
+        mock_search.assert_called_once_with("반포자이")
+
+    # ── Step 2: complexList fallback tests ────────────────────
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_complex_articles")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_complex_list")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.search_complex_by_name")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._ensure_session")
+    def test_search_complex_basic(self, mock_session, mock_search, mock_complex_list, mock_complex_articles):
+        """Step 1 misses → Step 2 finds via complexList."""
+        mock_session.return_value = MagicMock()
+        mock_search.return_value = []  # Step 1 fails
+        mock_complex_list.return_value = [
+            {"hscpNo": "12345", "hscpNm": "테스트아파트", "totAtclCnt": 1},
+        ]
+        mock_complex_articles.return_value = self.MOCK_API_RESPONSE["body"]
+
+        results = search_complex("테스트", district_name="강남구", limit=10)
+        assert len(results) == 1
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_complex_articles")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_complex_list")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.search_complex_by_name")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._ensure_session")
+    def test_search_complex_no_match(self, mock_session, mock_search, mock_complex_list, mock_complex_articles):
+        mock_session.return_value = MagicMock()
+        mock_search.return_value = []  # Step 1 fails
+        mock_complex_list.return_value = [
+            {"hscpNo": "99999", "hscpNm": "다른아파트", "totAtclCnt": 5},
+        ]
+
+        results = search_complex("없는단지", district_name="강남구", limit=10)
+        assert len(results) == 0
+        mock_complex_articles.assert_not_called()
+
+    # ── Step 3: region-wide fallback tests ────────────────────
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_all_pages")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_complex_list")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.search_complex_by_name")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._ensure_session")
+    def test_search_complex_fallback_empty_list(self, mock_session, mock_search, mock_complex_list, mock_fetch):
+        """Falls back to region search when both Step 1 and Step 2 fail."""
+        mock_session.return_value = MagicMock()
+        mock_search.return_value = []  # Step 1 fails
+        mock_complex_list.return_value = []  # Step 2 fails
+        mock_fetch.return_value = self.MOCK_API_RESPONSE["body"]
 
         results = search_complex("테스트", district_name="강남구", limit=10)
         assert len(results) == 1
 
     @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_all_pages")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_complex_list")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.search_complex_by_name")
     @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._ensure_session")
-    def test_search_complex_no_match(self, mock_session, mock_fetch):
-        mock_fetch.return_value = self.MOCK_API_RESPONSE["body"]
+    def test_search_complex_fallback_no_match(self, mock_session, mock_search, mock_complex_list, mock_fetch):
+        """Falls back to region search when target not in complexList."""
         mock_session.return_value = MagicMock()
+        mock_search.return_value = []  # Step 1 fails
+        mock_complex_list.return_value = [
+            {"hscpNo": "99999", "hscpNm": "다른아파트", "totAtclCnt": 5},
+        ]
+        mock_fetch.return_value = self.MOCK_API_RESPONSE["body"]
 
-        results = search_complex("없는단지", district_name="강남구", limit=10)
+        results = search_complex("테스트", district_name="강남구", limit=10)
+        assert len(results) == 1
+        mock_fetch.assert_called_once()  # Verify fallback was used
+
+    # ── No district → Step 1 only ─────────────────────────────
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.fetch_complex_articles")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.search_complex_by_name")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._ensure_session")
+    def test_search_complex_no_district_with_redirect(self, mock_session, mock_search, mock_articles):
+        """Without district, Step 1 works; returns empty if Step 1 misses."""
+        mock_session.return_value = MagicMock()
+        mock_search.return_value = [{"hscpNo": "659", "hscpNm": "목동7단지"}]
+        mock_articles.return_value = self.MOCK_API_RESPONSE["body"]
+
+        results = search_complex("목동7단지", limit=10)
+        assert len(results) == 1
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient.search_complex_by_name")
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._ensure_session")
+    def test_search_complex_no_district_no_redirect(self, mock_session, mock_search):
+        """Without district and no redirect match, returns empty list."""
+        mock_session.return_value = MagicMock()
+        mock_search.return_value = []
+
+        results = search_complex("없는아파트", limit=10)
         assert len(results) == 0
 
-    def test_search_complex_no_district(self):
-        with pytest.raises(ValueError):
-            search_complex("래미안")
+
+# ── NaverLandApiClient.search_complex_by_name unit tests ──────
+
+class TestSearchComplexByName:
+    """Unit tests for the search redirect method on NaverLandApiClient."""
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._visit_main_page")
+    def test_302_redirect_single_match(self, mock_visit):
+        """302 redirect → extracts hscpNo from Location header."""
+        client = NaverLandApiClient()
+        mock_response = MagicMock()
+        mock_response.status_code = 302
+        mock_response.headers = {"Location": "/complex/info/659"}
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        client._session = mock_session
+        client._current_profile = {"ua": "test", "sec_ch_ua": None, "sec_ch_ua_platform": None, "sec_ch_ua_mobile": None}
+
+        result = client.search_complex_by_name("목동7단지")
+        assert result == [{"hscpNo": "659", "hscpNm": "목동7단지"}]
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._visit_main_page")
+    def test_200_multiple_matches(self, mock_visit):
+        """200 response → extracts multiple hscpNo from HTML."""
+        client = NaverLandApiClient()
+        html = (
+            '<a href="/complex/info/22853">반포자이</a>'
+            '<a href="/complex/info/168097">반포자이2</a>'
+            '<a href="/complex/info/22853">반포자이</a>'  # duplicate
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = html
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        client._session = mock_session
+        client._current_profile = {"ua": "test", "sec_ch_ua": None, "sec_ch_ua_platform": None, "sec_ch_ua_mobile": None}
+
+        result = client.search_complex_by_name("반포자이")
+        assert len(result) == 2  # deduplicated
+        assert result[0]["hscpNo"] == "22853"
+        assert result[1]["hscpNo"] == "168097"
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._visit_main_page")
+    def test_200_no_complex_links(self, mock_visit):
+        """200 response with no complex links → empty list."""
+        client = NaverLandApiClient()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = "<html><body>No results</body></html>"
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = mock_response
+        client._session = mock_session
+        client._current_profile = {"ua": "test", "sec_ch_ua": None, "sec_ch_ua_platform": None, "sec_ch_ua_mobile": None}
+
+        result = client.search_complex_by_name("없는아파트")
+        assert result == []
+
+    @patch("cli_anything.naver_land.utils.naver_api.NaverLandApiClient._visit_main_page")
+    def test_request_exception(self, mock_visit):
+        """Request exception → empty list (no crash)."""
+        import requests as req
+        client = NaverLandApiClient()
+        mock_session = MagicMock()
+        mock_session.get.side_effect = req.exceptions.Timeout("timeout")
+        client._session = mock_session
+        client._current_profile = {"ua": "test", "sec_ch_ua": None, "sec_ch_ua_platform": None, "sec_ch_ua_mobile": None}
+
+        result = client.search_complex_by_name("타임아웃")
+        assert result == []

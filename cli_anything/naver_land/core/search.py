@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import time
@@ -15,6 +16,8 @@ from cli_anything.naver_land.core.districts import (
     load_districts,
 )
 from cli_anything.naver_land.utils.naver_api import NaverLandApiClient
+
+logger = logging.getLogger(__name__)
 
 
 # ── Singleton client ──────────────────────────────────────────
@@ -307,6 +310,46 @@ def district_map_url(district: District, trade_type: str = "A1") -> str:
     )
 
 
+def _build_trade_code(trade_types: list[str] | None) -> str:
+    """Build trade type code string from trade type names."""
+    if trade_types:
+        codes = []
+        for tt in trade_types:
+            code = TRADE_TYPES.get(tt)
+            if code is None:
+                raise ValueError(
+                    f"알 수 없는 거래유형: {tt} (가능: {', '.join(TRADE_TYPES.keys())})"
+                )
+            codes.append(code)
+        return ":".join(codes)
+    return "A1:B1:B2:B3"
+
+
+def _fetch_articles_for_complexes(
+    client: NaverLandApiClient,
+    complexes: list[dict],
+    trad_tp_cd: str,
+    limit: int,
+) -> list[NaverListing]:
+    """Fetch article listings for a list of complexes by hscpNo."""
+    all_listings: list[NaverListing] = []
+    for cx in complexes:
+        remaining = limit - len(all_listings)
+        if remaining <= 0:
+            break
+        articles = client.fetch_complex_articles(
+            hscpNo=str(cx["hscpNo"]),
+            tradTpCd=trad_tp_cd,
+            limit=remaining,
+        )
+        for item in articles:
+            try:
+                all_listings.append(NaverListing.from_api_response(item))
+            except Exception:
+                continue
+    return all_listings[:limit]
+
+
 def search_complex(
     complex_name: str,
     district_name: str | None = None,
@@ -316,13 +359,81 @@ def search_complex(
     client: NaverLandApiClient | None = None,
     city_name: str | None = None,
 ) -> list[NaverListing]:
-    """Search listings by complex (apartment) name.
+    """Search listings by complex name — 3-step fallback.
 
-    Fetches all listings from the district, then filters by complex name.
+    Step 1: Search redirect → hscpNo → getComplexArticleList (fastest)
+    Step 2: complexList → hscpNo match → getComplexArticleList
+    Step 3: search_region → client-side filter (slowest fallback)
     """
-    if district_name is None:
-        raise ValueError("단지명 검색 시 구(-d)를 지정해야 합니다.")
+    trad_tp_cd = _build_trade_code(trade_types)
+    client = client or get_shared_client()
 
+    # ── Step 1: Search redirect (no district required) ────────
+    search_results = client.search_complex_by_name(complex_name)
+    if search_results:
+        logger.info(
+            f"Step 1 hit: search redirect found {len(search_results)} "
+            f"complex(es) for '{complex_name}'"
+        )
+        articles = _fetch_articles_for_complexes(
+            client, search_results, trad_tp_cd, limit,
+        )
+        if articles:
+            return articles
+
+    # ── Step 2/3 require district ─────────────────────────────
+    if district_name is None:
+        logger.info("No district specified, cannot fall back to Step 2/3")
+        return []
+
+    if city_name:
+        city = find_city(city_name)
+        if city is None:
+            raise ValueError(f"시/도를 찾을 수 없습니다: {city_name}")
+        load_districts(city.code)
+
+    district = find_district(district_name, city_name=city_name)
+    if district is None:
+        raise ValueError(f"지역을 찾을 수 없습니다: {district_name}")
+
+    # ── Step 2: complexList → hscpNo match ────────────────────
+    rlet_tp_cd = property_type.split(":")[0]
+    complexes = client.fetch_complex_list(
+        cortarNo=district.cortarNo,
+        coord_params=district.coord_params,
+        rletTpCd=rlet_tp_cd,
+        target_name=complex_name,
+    )
+
+    matched = [c for c in complexes if complex_name in c.get("hscpNm", "")]
+    if matched:
+        logger.info(
+            f"Step 2 hit: complexList matched {len(matched)} complex(es)"
+        )
+        articles = _fetch_articles_for_complexes(
+            client, matched, trad_tp_cd, limit,
+        )
+        if articles:
+            return articles
+
+    # ── Step 3: region-wide search + filter (slowest) ─────────
+    logger.info("Step 3: falling back to region-wide search + filter")
+    return _search_complex_fallback(
+        complex_name, district_name, trade_types,
+        property_type, limit, client, city_name,
+    )
+
+
+def _search_complex_fallback(
+    complex_name: str,
+    district_name: str,
+    trade_types: list[str] | None,
+    property_type: str,
+    limit: int,
+    client: NaverLandApiClient,
+    city_name: str | None,
+) -> list[NaverListing]:
+    """Fallback: fetch all region listings and filter by name."""
     all_listings = search_region(
         district_name=district_name,
         trade_types=trade_types,
@@ -331,10 +442,8 @@ def search_complex(
         client=client,
         city_name=city_name,
     )
-
     matched = [
         listing for listing in all_listings
         if complex_name in listing.atcl_nm
     ]
-
     return matched[:limit]

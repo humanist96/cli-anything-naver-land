@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 import hashlib
+import urllib.parse
 from datetime import datetime
 
 import requests
@@ -114,6 +116,9 @@ _REFERERS = [
 
 BASE_URL = "https://m.land.naver.com"
 ARTICLE_LIST_URL = f"{BASE_URL}/cluster/ajax/articleList"
+COMPLEX_LIST_URL = f"{BASE_URL}/cluster/ajax/complexList"
+COMPLEX_ARTICLE_URL = f"{BASE_URL}/complex/getComplexArticleList"
+SEARCH_URL = f"{BASE_URL}/search/result"
 
 
 def _build_headers(profile: dict | None = None) -> dict:
@@ -484,6 +489,172 @@ class NaverLandApiClient:
             page += 1
 
         return all_articles[:limit]
+
+    def fetch_complex_list(
+        self,
+        cortarNo: str,
+        coord_params: str,
+        rletTpCd: str = "APT",
+        target_name: str | None = None,
+        max_pages: int = 5,
+    ) -> list[dict]:
+        """Fetch complex (apartment) list for a district with pagination.
+
+        If target_name is given, stops early once a match is found
+        (avoids fetching all pages for large districts).
+        Otherwise fetches up to max_pages.
+
+        Returns list of dicts with hscpNo, hscpNm (complex name), etc.
+        """
+        all_complexes = []
+        page = 1
+
+        while page <= max_pages:
+            if page > 1:
+                self._random_delay()
+
+            url = (
+                f"{COMPLEX_LIST_URL}"
+                f"?cortarNo={cortarNo}"
+                f"{coord_params}"
+                f"&rletTpCd={rletTpCd}"
+                f"&page={page}"
+            )
+            logger.info(f"Fetching complex list page {page}: {url[:100]}...")
+            result = self._request_with_backoff(url)
+
+            if result is None:
+                break
+
+            items = result.get("result", [])
+            if not items:
+                break
+
+            all_complexes.extend(items)
+
+            # Early exit if target found
+            if target_name:
+                matched = [c for c in all_complexes if target_name in c.get("hscpNm", "")]
+                if matched:
+                    logger.info(f"Found target complex '{target_name}' on page {page}")
+                    return all_complexes
+
+            more = result.get("more", False)
+            if not more:
+                break
+
+            page += 1
+
+        return all_complexes
+
+    def fetch_complex_articles(
+        self,
+        hscpNo: str,
+        tradTpCd: str = "A1",
+        limit: int = 1000,
+        on_progress: callable = None,
+    ) -> list[dict]:
+        """Fetch listings for a specific complex (hscpNo) with pagination.
+
+        Uses the complex-specific article list API which returns only
+        listings for the given complex — much faster than fetching
+        all district listings and filtering.
+        """
+        all_articles = []
+        page = 1
+
+        while len(all_articles) < limit:
+            if page > 1:
+                self._random_delay()
+
+            url = (
+                f"{COMPLEX_ARTICLE_URL}"
+                f"?hscpNo={hscpNo}"
+                f"&tradTpCd={tradTpCd}"
+                f"&page={page}"
+            )
+            logger.info(f"Fetching complex articles page {page}: hscpNo={hscpNo}")
+            response = self._request_with_backoff(url)
+
+            if response is None:
+                logger.error(f"Failed to fetch complex articles page {page}")
+                break
+
+            result = response.get("result", {})
+            body = result.get("list", [])
+            if not body:
+                logger.info(f"No more complex articles at page {page}")
+                break
+
+            all_articles.extend(body)
+
+            if on_progress:
+                on_progress(page, len(all_articles))
+
+            more = result.get("moreDataYn", "N")
+            if more != "Y":
+                break
+
+            page += 1
+
+        return all_articles[:limit]
+
+    def search_complex_by_name(self, query: str) -> list[dict]:
+        """Search complex hscpNo instantly via search redirect.
+
+        m.land.naver.com/search/result/{query} returns:
+        - 302 → /complex/info/{hscpNo} : single match
+        - 200 → HTML with /complex/info/{id} links : multiple matches
+
+        Returns: [{"hscpNo": "659", "hscpNm": "목동7단지"}, ...]
+        """
+        session = self._ensure_session()
+        headers = _build_headers(self._current_profile)
+        # Use page-visit headers (not AJAX) since this is a search page
+        headers["Accept"] = (
+            "text/html,application/xhtml+xml,application/xml;"
+            "q=0.9,image/avif,image/webp,*/*;q=0.8"
+        )
+        headers.pop("X-Requested-With", None)
+        headers["Sec-Fetch-Dest"] = "document"
+        headers["Sec-Fetch-Mode"] = "navigate"
+
+        url = f"{SEARCH_URL}/{urllib.parse.quote(query)}"
+        logger.info(f"Search redirect for: {query}")
+
+        try:
+            response = session.get(
+                url, headers=headers, timeout=30, allow_redirects=False,
+            )
+            self._last_request_time = time.time()
+            self._request_count += 1
+            self._session_request_count += 1
+
+            if response.status_code == 302:
+                location = response.headers.get("Location", "")
+                match = re.search(r"/complex/info/(\d+)", location)
+                if match:
+                    logger.info(
+                        f"Search redirect → hscpNo={match.group(1)}"
+                    )
+                    return [{"hscpNo": match.group(1), "hscpNm": query}]
+
+            elif response.status_code == 200:
+                ids = re.findall(r"/complex/info/(\d+)", response.text)
+                unique_ids = list(dict.fromkeys(ids))
+                if unique_ids:
+                    logger.info(
+                        f"Search found {len(unique_ids)} complexes: "
+                        f"{unique_ids[:5]}"
+                    )
+                    return [
+                        {"hscpNo": cid, "hscpNm": ""} for cid in unique_ids
+                    ]
+
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Search redirect failed: {e}")
+
+        return []
 
     def inter_district_delay(self):
         """Apply longer delay between districts (simulate human switching areas)."""
